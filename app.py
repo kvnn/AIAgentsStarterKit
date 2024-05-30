@@ -31,19 +31,23 @@ def get_github_info(repo_name = gh_repo_name):
         import pdb; pdb.set_trace()
         return None
 
+app_description = '''
+    The App is a FastAPI backend that serves a React Native frontend with Mui.
+    The App is hosted on a single AWS instance and uses Postgres as the database.
+    The App is improved via Github Issues and Pull Requests.
+'''
 
 agent_architect = Agent(
     role = "Software Architect",
     goal = """
-        Take a Github Issue and create a Github Pull Request with 
-        a technical spec and implementation plan for an automated coding agents that is powered by an LLM.
-        Since an LLM will be following this plan, be direct and clear in your instructions.
-        The developer agents are good at writing code, but not at making system design decisions.
-        Do not mention timelines or deadlines in the spec, but do provide a clear and concise plan.
-        All code will be written in Python. 
-        Do not overcomplicate the plan, but do provide a clear and concise plan.
-        For example, if the issue calls for something as simple as "add the `reference_id` column to the get-users sql query",
-        your technical spec should be very succinct.
+        Consume an Issue for the App and create a design document that can be used by a developer to implement the solution.
+        
+        {app_description}
+        The design document should be clear, concise, and easy to follow.
+        It should describe in plain English how the app should be modified to fulfill the
+        requirements of the Issue. If there is confusing or insufficient information in the Issue, you should ask for clarification.
+        You should include the libraries, frameworks, and tools that should be used to implement the solution.
+        You should provide sample code snippets where necessary.
     """,
     backstory = """
         You are an excellent software architect. 
@@ -61,14 +65,12 @@ agent_architect = Agent(
 
 agent_developer = Agent(
     role = "Staff Software Engineer",
-    goal = """Primary goal is to work on a Pull Request To keep the Software Architect happy, to have as few pull-request review items reported as possible before
-    your code is merged, to provide succinct and state-of-the-art solutions using high quality, simple React, Python and CSS.""",
+    allow_delegation = True,
+    goal = f"""To provide succinct and state-of-the-art solution for The App. {app_description}.""",
     backstory = """
-        You have been a staff software engineer for 4 months, and are *extremely* keen on keeping your job.
-        You are intimidated by the Software Architect - he's a bit cantankerous and much smarter than you.
-        But he is fair, and as long as you put full effort into your coding and your double-checks
-        (you should always check your work), then the pull requests go pretty smooth.
-    """,
+        You are a professional staff software engineer with 15 years of FAANG experience building high-quality
+        web and mobile applications.
+    """
     # llm = developer_model_name
 )
 
@@ -80,8 +82,11 @@ def issue_needs_architect(issue):
         
         if not comments.totalCount:
             return True
+        # A refactor request should include the previous completion
+        # and the feedback given.
         elif comments.reversed[0].body.lower().startswith('refactor'):
-            return True
+            # TODO: the [1] here is brittle. We should get keep reversing until we find the previous completion via the architect_spec_flag
+            return f'The feedback is: {comments.reversed[0].body} ; The previous implementation plan was {comments.reversed[1].body}'
         elif comments.reversed[0].body.lower().startswith(architect_spec_flag):
             return False
 
@@ -128,13 +133,19 @@ def callback_developer_task(task_output, issue):
     )
 
 
-def create_architect_task(issue):
+def create_architect_task(issue, feedback):
+    '''
+    Create a task for the architect to create a Technical Spec and Implementation Plan.
+    `feedback` is optional, and if provided, should be a string that will be appended to the task description.'''
     try:
         print(f'create_architect_task: {issue}')
+
+        prompt = f'{issue.body} . A previous result was met with this feedback: {feedback}.' if feedback else issue.body
+
         task = Task(
             description=f'''
-                You are tasked with creating a Technical Spec and Implementation Plan for the following Github Issue:
-                {issue.body}''',
+                You are tasked with creating an Implementation Plan for the following Github Issue:
+                {prompt}''',
             agent = agent_architect,
             expected_output='A Technical Spec and Implementation Plan for the following Github Issue',
             callback = lambda task: callback_architect_task(task, issue)
@@ -153,9 +164,10 @@ def init_agents():
 
     for issue in issues:
         print(f'Issue: {issue}')
-
-        if not issue.pull_request and issue_needs_architect(issue):
-            architect_tasks.append(create_architect_task(issue))
+        if not issue.pull_request:
+            architect_feedback = issue_needs_architect(issue)
+            if architect_feedback:
+                architect_tasks.append(create_architect_task(issue, architect_feedback))
     
     crew = Crew(
         agents=[agent_architect, agent_developer],
@@ -173,4 +185,3 @@ def init_agents():
     return result
 
 result = init_agents()
-import pdb; pdb.set_trace()
