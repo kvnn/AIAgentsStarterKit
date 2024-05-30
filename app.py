@@ -3,6 +3,7 @@ import os
 
 from crewai import Agent, Task, Crew, Process
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 
 
 load_dotenv()
@@ -10,8 +11,10 @@ load_dotenv()
 gh_base_branch = os.environ.get('GH_BASE_BRANCH', 'main')
 gh_access_token = os.environ.get('GH_ACCESS_TOKEN', '')
 gh_repo_name = os.environ.get('GH_REPO_NAME', 'kvnn/AIAgentsStarterKit')
-architect_model_name = 'gpt-3-turbo'
-developer_model_name = 'gpt-3-turbo'
+
+
+architect_llm = ChatOpenAI(model_name='gpt-4o', temperature=0.2)
+developer_llm = ChatOpenAI(model_name='gpt-3-turbo', temperature=0.2)
 
 gh_repo = None
 
@@ -39,6 +42,9 @@ app_description = '''
 
 agent_architect = Agent(
     role = "Software Architect",
+    llm = architect_llm,
+    allow_delegation = False,
+    verbose = True,
     goal = """
         Consume an Issue for the App and create a design document that can be used by a developer to implement the solution.
         
@@ -53,25 +59,20 @@ agent_architect = Agent(
         You are an excellent software architect. 
         You are a MIT Computer Engineering graduate and love to keep things simple.
         You have landed on using React Native, FastAPI and Postgres for every project.
-        We keep all of our infrastructure on AWS and can run multiple FastAPI projects
-        on a single EC2 instance with a very simple pattern that you articulated (separate git repositories corresponding to systemd services and distinct ports).
-
         You love git, bash, linux, ffmpeg and markdown.
     """,
-    allow_delegation = False,
-    verbose = True,
-    # llm = architect_model_name
 )
 
 agent_developer = Agent(
     role = "Staff Software Engineer",
+    llm = developer_llm,
     allow_delegation = True,
+    verbose = True,
     goal = f"""To provide succinct and state-of-the-art solution for The App. {app_description}.""",
     backstory = """
         You are a professional staff software engineer with 15 years of FAANG experience building high-quality
         web and mobile applications.
-    """
-    # llm = developer_model_name
+    """,
 )
 
 architect_spec_flag = '[architect spec]'
@@ -140,7 +141,7 @@ def create_architect_task(issue, feedback):
     try:
         print(f'create_architect_task: {issue}')
 
-        prompt = f'{issue.body} . A previous result was met with this feedback: {feedback}.' if feedback else issue.body
+        prompt = f'{issue.body} . A previous result was met with this feedback: {feedback}.' if isinstance(feedback, str) else issue.body
 
         task = Task(
             description=f'''
