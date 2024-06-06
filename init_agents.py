@@ -1,6 +1,7 @@
-from github import Github, Auth
+from collections import namedtuple
 import os
 
+from github import Github, Auth
 from crewai import Agent, Task, Crew, Process
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -8,6 +9,7 @@ from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
+Message = namedtuple('Message', ['role', 'content'])
 gh_repo = None
 gh_base_branch = os.environ.get('GH_BASE_BRANCH', 'main')
 gh_access_token = os.environ.get('GH_ACCESS_TOKEN', '')
@@ -145,28 +147,61 @@ def issue_needs_cto(issue):
     try:
         comments = issue.get_comments()
         
-        if not comments.totalCount:
-            return True
-        # A refactor request should include the previous completion
-        # and the feedback given.
-        elif comments.reversed[0].body.lower().startswith('refactor'):
-            # TODO: the [1] here is brittle. We should get keep reversing until we find the previous completion via the cto_comment_flag
-            return f'The feedback is: {comments.reversed[0].body} ; The previous implementation plan was {comments.reversed[1].body}'
-        elif comments.reversed[0].body.lower().startswith(cto_comment_flag):
-            return False
-
-        # At this point we have an ambiguous comment thread, but we know that
-        # the last comment was not a refactor or an architect spec.
-        # If there is an architect spec in the thread, we should not create a new one.
-        # Otherwise, we should.
+        message_history = []
+        refactor_requested = False
+        
         for comment in comments:
-            if comment.body.lower().startswith(cto_comment_flag):
-                return False
-        return True
+            if comment.body.lower().startswith('refactor'):
+                message_history.append(Message('refactor_request', comment.body))
+            elif comment.body.lower().startswith(cto_comment_flag):
+                message_history.append(Message('cto_response', comment.body))
+            else:
+                message_history.append(Message('comment', comment.body))
+        
+        if message_history and message_history[-1].role == 'refactor_request':
+            refactor_requested = True
+        
+        return refactor_requested, message_history
     except Exception as e:
         print(f'[issue_needs_cto] Error: {e}')
         import pdb; pdb.set_trace()
-        return False
+        return False, []
+
+def create_cto_task(issue, message_history):
+    '''
+    Create a task for the architect to create a Technical Spec and Implementation Plan.
+    `message_history` is a list of Message objects representing the comment history.
+    '''
+    try:
+        print(f'create_cto_task: {issue}')
+        
+        history_str = '\n'.join(f'{msg.role.upper()}: {msg.content}' for msg in message_history)
+        
+        prompt = f'''
+            {issue.body}
+            
+            Message History:
+            {history_str}
+        '''
+        
+        task = Task(
+            description=f'''
+                You are tasked with requirements gathering for the following Github Issue:
+                {prompt}
+                
+                Return your questions and a high-level technical design document that outlines the technologies,
+                libraries, packages, and vendors to be used in the implementation. The design document should be clear,
+                concise, and easy to follow. It should provide a technical roadmap for the development team.
+            ''',
+            agent=agent_cto,
+            expected_output='A Technical Spec and Implementation Plan for the following Github Issue',
+            callback=lambda task: callback_cto_task(task, issue)
+        )
+        return task
+    except Exception as e:
+        print(f'[create_cto_task] Error: {e}')
+        import pdb; pdb.set_trace()
+        return None
 
 
 def callback_cto_task(task_output, issue):
@@ -201,34 +236,6 @@ def callback_coder_task(task_output, issue):
 def callback_qa_task(task_output, issue):
     # TODO
     pass
-
-
-def create_cto_task(issue, feedback):
-    '''
-    Create a task for the architect to create a Technical Spec and Implementation Plan.
-    `feedback` is optional, and if provided, should be a string that will be appended to the task description.'''
-    try:
-        print(f'create_cto_task: {issue}')
-
-        prompt = f'{issue.body} . A previous result was met with this feedback: {feedback}.' if isinstance(feedback, str) else issue.body
-
-        task = Task(
-            description=f'''
-                You are tasked with requirements gathering for the following Github Issue:
-                {prompt}
-                
-                Return your questions and a high-level technical design document that outlines the technologies,
-                libraries, packages, and vendors to be used in the implementation. The design document should be clear,
-                concise, and easy to follow. It should provide a technical roadmap for the development team.''',
-            agent = agent_cto,
-            expected_output='A Technical Spec and Implementation Plan for the following Github Issue',
-            callback = lambda task: callback_cto_task(task, issue)
-        )
-        return task
-    except Exception as e:
-        print(f'[create_cto_task] Error: {e}')
-        import pdb; pdb.set_trace()
-        return None
 
 
 def create_coder_task(issue, cto_spec):
@@ -278,9 +285,9 @@ def init_agents():
     for issue in issues:
         print(f'Issue: {issue}')
         if not issue.pull_request:
-            cto_feedback = issue_needs_cto(issue)
-            if cto_feedback:
-                cto_tasks.append(create_cto_task(issue, cto_feedback))
+            refactor_requested, message_history = issue_needs_cto(issue)
+            if refactor_requested:
+                cto_tasks.append(create_cto_task(issue, message_history))
     
     crew = Crew(
         agents=[agent_cto, agent_coder],
