@@ -2,6 +2,7 @@ import base64
 from collections import namedtuple
 import os
 from time import sleep, time
+import random
 
 from github import Github, Auth
 from crewai import Agent, Task, Crew, Process
@@ -133,6 +134,7 @@ def create_planner_task(issue, message_history):
         history_str = '\n'.join(f'{msg.role.upper()}: {msg.content}' for msg in message_history)
         
         prompt = f'''
+            {issue.title}
             {issue.body}
             
             Message History:
@@ -263,6 +265,62 @@ def planner_has_commented(issue):
 
     return False
 
+
+def is_pull_request_open(issue):
+    if not issue.pull_request:
+        return False
+    
+    pull_request_url = issue.pull_request.html_url
+    pull_number = int(pull_request_url.split('/')[-1])
+    pull_request = gh_repo.get_pull(pull_number)
+    
+    return pull_request.state == 'open'
+
+
+def create_pull_request_from_plan(issue, plan):
+    global gh_repo
+
+    try:
+        # Extract necessary information from the plan
+        title = issue.title
+        description = f'''Automated PR for Issue #{issue.number}
+        Plan: {plan}
+        '''
+        new_branch_name = f'feature/issue-{issue.number}-{issue.id}-{random.randint(1000, 9999)}'
+
+        # Verify the base branch exists
+        base_branch = gh_base_branch
+        try:
+            base_branch_commit = gh_repo.get_branch(base_branch).commit.sha
+        except Exception as e:
+            print(f'Error: Base branch "{base_branch}" not found: {e}')
+            return None
+
+        # Create a new branch for the pull request
+        gh_repo.create_git_ref(ref=f"refs/heads/{new_branch_name}", sha=base_branch_commit)
+
+        # Create a new file with the plan content in the new branch
+        gh_repo.create_file(
+            path=f"plan_{issue.id}.md",
+            message=f"Create plan for {title}",
+            content=description,
+            branch=new_branch_name,
+        )
+
+        # Create a new pull request
+        pull_request = gh_repo.create_pull(
+            issue=issue,
+            body=description,
+            head=new_branch_name,
+            base=base_branch
+        )
+
+        return pull_request
+    except Exception as e:
+        print(f'[create_pull_request_from_plan] Error: {e}')
+        raise e
+
+
 def start_agent_loop():
     loop_index = 0
     total_duration = 0
@@ -279,13 +337,16 @@ def start_agent_loop():
 
             for issue in issues:
                 print(f'Issue: {issue}')
-                if not issue.pull_request:
+                if not is_pull_request_open(issue):
                     refactor_requested, message_history = issue_needs_planner(issue)
                     if refactor_requested or not planner_has_commented(issue):
-                        issue_tasks.append(create_planner_task(issue, message_history))
+                        issue_tasks.append(
+                            create_planner_task(issue, message_history)
+                        )
                     elif issue_approved_by_human(issue):
                         plan = get_plan_from_issue(issue)
-                        coder_tasks.append(create_coder_task(issue, plan))
+                        create_pull_request_from_plan(issue, plan)
+                        # coder_tasks.append(create_coder_task(issue, plan))
 
             # Iterate over open pull requests to check if refactoring is needed
             for pull_request in pulls:

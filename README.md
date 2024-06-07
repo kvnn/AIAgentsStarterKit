@@ -21,22 +21,7 @@
 
 
 ### 2. Workflow
-
-The workflow should be as follows:
-
-- The Planner agent is involved when an issue needs refactoring (based on the refactor comment).
-- The Coder agent is involved in two scenarios:
-a. When an issue is approved by a human (based on the approve comment), it creates an initial commit and pull request.
-b. When a pull request needs refactoring (based on the refactor comment), it refactors the code and updates the pull request.
-
-Another way to put it:
- 1. Do we need the Planner?
-    - Yes for any open Issues without Pull Requests ~(only the Human closes Issues)~
-       - unless the last comment begins with "[cto]" ~(it will wait for the coder to respond)~
- 2. Do we need the Coder?
-    - Yes for any open Issues without a Pull Request and whose latest comment that begins with `approve` (via Human)
-      - Coder will create an Initial Commit and Pull Request
-    - Yes for any open PR whose latest comment begins with `refactor` (via Human)
+... TODO
 
 
 ### 3. Running
